@@ -1,31 +1,25 @@
 #!/usr/bin/env python3
 """
-B.AI Credit Farmer — Farm 500K free credits per Google account from chat.b.ai
-
-Extracts sk-xxx API keys via Google OAuth login.
-Each new account gets 500,000 free credits.
+B.AI Credit Farmer — Farm 500K free credits per Google account.
+Extracts sk-xxx API keys from chat.b.ai via Google OAuth.
 
 Usage:
-  Single:  python bai-farm.py --email user@domain.com --password mypass
-  Batch:   python bai-farm.py --range 1-100 --domain giosin.com --password mypass
+  Single:  python bai-farm.py --email user@domain.com
+  Batch:   python bai-farm.py --range 1-120 --domain giosin.com
+  Custom:  python bai-farm.py --range 1-50 --domain giosin.com --password mypass --delay 30
 
-Requirements:
-  pip install playwright
-  playwright install chromium
+Requires: cloakbrowser (pip install cloakbrowser)
+Output:   /root/bai-keys/{acct}.txt (one sk-xxx key per file)
 """
 
-import argparse, time, shutil, re, sys, os, json
+import argparse, time, shutil, re, sys
 from pathlib import Path
+from cloakbrowser import launch_persistent_context
 
-# ── Try cloakbrowser first, fallback to playwright ────────────────
-try:
-    from cloakbrowser import launch_persistent_context as _launch
-    ENGINE = 'cloakbrowser'
-except ImportError:
-    from playwright.sync_api import sync_playwright
-    ENGINE = 'playwright'
-
+# ── Constants ─────────────────────────────────────────────────────
 FINGERPRINT = '12345'
+DEFAULT_PASSWORD = 'qwertyui'
+DEFAULT_DELAY = 10
 MAX_RETRIES = 3
 CREDITS_PER_ACCOUNT = 500_000
 
@@ -55,37 +49,6 @@ def already_done(acct, key_dir):
     return False
 
 
-def create_context(profile_dir, headless=True):
-    """Create browser context (cloakbrowser or playwright)."""
-    if ENGINE == 'cloakbrowser':
-        return _launch(
-            str(profile_dir), headless=headless,
-            args=[f'--fingerprint={FINGERPRINT}', '--no-sandbox']
-        )
-    else:
-        pw = sync_playwright().start()
-        browser = pw.chromium.launch(
-            headless=headless,
-            args=[f'--fingerprint={FINGERPRINT}', '--no-sandbox']
-        )
-        ctx = browser.new_context()
-        ctx._pw = pw  # keep reference to stop later
-        ctx._browser = browser
-        return ctx
-
-
-def close_context(ctx):
-    """Safely close browser context."""
-    try:
-        if hasattr(ctx, '_browser'):
-            ctx._browser.close()
-        if hasattr(ctx, '_pw'):
-            ctx._pw.stop()
-        ctx.close()
-    except:
-        pass
-
-
 def js_click(page, text):
     """Click button containing text via JS (bypasses overlay/z-index)."""
     page.evaluate(f'''() => {{
@@ -113,21 +76,22 @@ def js_click_exact(page, text):
 
 
 def farm_one(email, password, key_dir):
-    """
-    Farm a single account.
-    Returns: (status, detail)
-      status: 'OK' | 'SKIP' | 'FAIL'
-    """
+    """Farm a single account. Returns (status, detail)."""
     acct = email.split('@')[0]
 
     if already_done(acct, key_dir):
         return 'SKIP', 'already has key'
 
     # Fresh browser profile per account
-    profile_dir = Path(f'/tmp/bai_{acct}_{int(time.time())}')
-    profile_dir.mkdir(parents=True, exist_ok=True)
+    profile_dir = Path(f'/tmp/bai_{acct}')
+    if profile_dir.exists():
+        shutil.rmtree(profile_dir)
+    profile_dir.mkdir(parents=True)
 
-    ctx = create_context(profile_dir)
+    ctx = launch_persistent_context(
+        str(profile_dir), headless=True,
+        args=[f'--fingerprint={FINGERPRINT}', '--no-sandbox']
+    )
 
     try:
         page = ctx.new_page()
@@ -215,15 +179,15 @@ def farm_one(email, password, key_dir):
             for _ in range(60):
                 time.sleep(5)
                 if 'chat.b.ai' in popup.url:
-                    log('OAuth SUCCESS', acct)
+                    log('OAuth SUCCESS — popup on B.AI', acct)
                     break
                 if popup.url == 'about:blank':
                     break
 
-            # Use popup page (main page SPA routing hangs)
+            # Use popup page (main page SPA routing hangs on goto)
             if 'chat.b.ai' in popup.url:
                 page = popup
-                log('Using popup page', acct)
+                log('Using popup page for B.AI', acct)
 
             try:
                 page.goto('https://chat.b.ai/key', timeout=60000, wait_until='domcontentloaded')
@@ -298,7 +262,10 @@ def farm_one(email, password, key_dir):
     except Exception as e:
         return 'FAIL', str(e)[:200]
     finally:
-        close_context(ctx)
+        try:
+            ctx.close()
+        except:
+            pass
         shutil.rmtree(profile_dir, ignore_errors=True)
 
 
@@ -306,29 +273,18 @@ def main():
     parser = argparse.ArgumentParser(
         description='B.AI Credit Farmer — farm 500K credits per Google account',
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog='''
-Examples:
-  Single account:
-    python bai-farm.py --email user@domain.com --password mypass
-
-  Batch 100 accounts:
-    python bai-farm.py --range 1-100 --domain giosin.com --password mypass
-
-  Custom prefix and delay:
-    python bai-farm.py --range 1-50 --prefix acc --domain mail.com --delay 30
-
-Output:
-  Keys saved to ./bai-keys/{acct}.txt (one sk-xxx key per file, 35 chars)
-  Log saved to ./bai-keys/farm.log
-        '''
+        epilog='Examples:\n'
+               '  python bai-farm.py --email user@domain.com\n'
+               '  python bai-farm.py --range 1-120 --domain giosin.com\n'
+               '  python bai-farm.py --range 1-50 --delay 30 --password mypass\n'
     )
     parser.add_argument('--email', help='Single account email')
-    parser.add_argument('--range', help='Account range (e.g., 1-100)')
+    parser.add_argument('--range', help='Account range (e.g., 1-120)')
     parser.add_argument('--domain', default='giosin.com', help='Email domain (default: giosin.com)')
-    parser.add_argument('--password', required=True, help='Password for all accounts')
+    parser.add_argument('--password', default=DEFAULT_PASSWORD, help='Password for all accounts')
     parser.add_argument('--prefix', default='kdi', help='Account prefix (default: kdi)')
-    parser.add_argument('--delay', type=int, default=10, help='Delay between accounts in seconds (default: 10)')
-    parser.add_argument('--output', default='./bai-keys', help='Output directory (default: ./bai-keys)')
+    parser.add_argument('--delay', type=int, default=DEFAULT_DELAY, help='Delay between accounts in seconds')
+    parser.add_argument('--output', default='/root/bai-keys', help='Output directory for keys')
 
     args = parser.parse_args()
 
@@ -350,8 +306,7 @@ Output:
     ok_count = skip_count = fail_count = 0
     results = {}
 
-    log(f'🚀 B.AI Farm: {total} accounts, {args.delay}s delay, engine={ENGINE}')
-    log(f'   Domain: {args.domain}, Prefix: {args.prefix}')
+    log(f'🚀 B.AI Farm: {total} accounts, {args.delay}s delay, domain={args.domain}')
     log(f'   Output: {key_dir}')
     print(flush=True)
 
@@ -384,33 +339,21 @@ Output:
     # Final summary
     total_credits = (ok_count + skip_count) * CREDITS_PER_ACCOUNT
     print(flush=True)
-    print('=' * 55)
+    print('=' * 50)
     log('🏁 FARMING COMPLETE')
-    print(f'   Total accounts:  {total}')
-    print(f'   ✅ New keys:     {ok_count}')
-    print(f'   ⏭️ Skipped:      {skip_count}')
-    print(f'   ❌ Failed:       {fail_count}')
+    print(f'   Total accounts: {total}')
+    print(f'   ✅ New keys:    {ok_count}')
+    print(f'   ⏭️ Skipped:     {skip_count}')
+    print(f'   ❌ Failed:      {fail_count}')
     print(f'   💰 Total credits: {total_credits:,}')
     print(f'   📁 Keys saved:   {key_dir}/')
-    print('=' * 55)
+    print('=' * 50)
 
     if fail_count > 0:
-        print(f'\nFailed accounts:')
+        print('\nFailed accounts:')
         for acct, result in results.items():
             if result.startswith('FAIL'):
                 print(f'  ❌ {acct}: {result[7:]}')
-
-    # Save summary JSON
-    summary = {
-        'total': total,
-        'ok': ok_count,
-        'skipped': skip_count,
-        'failed': fail_count,
-        'total_credits': total_credits,
-        'results': results
-    }
-    with open(key_dir / 'summary.json', 'w') as f:
-        json.dump(summary, f, indent=2)
 
     return 0 if fail_count == 0 else 1
 
