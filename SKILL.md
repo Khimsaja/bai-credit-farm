@@ -1,92 +1,95 @@
 ---
 name: bai-credit-farming
-description: "Farm B.AI (chat.b.ai) free credits via Google OAuth — extract API keys with 500K credits each"
+description: "Farm 500K free credits per account from chat.b.ai via Google OAuth + residential proxy for Turnstile bypass"
 trigger: "bai farm, b.ai credits, chat.b.ai, bai api key, free credits"
-tools: [browser automation, playwright or cloakbrowser]
+tools: [cloakbrowser, playwright, residential proxy]
 ---
 
 # B.AI Credit Farming
 
-Farm **500,000 free credits** per account from [chat.b.ai](https://chat.b.ai) using Google OAuth login. Each account gets a persistent `sk-xxx` API key compatible with OpenAI API format.
+Farm **500,000 free credits** per account from [chat.b.ai](https://chat.b.ai) using Google OAuth.
+
+## ⚠️ PROXY REQUIRED
+
+**Claim credits REQUIRES residential proxy.** Cloudflare Turnstile blocks datacenter IPs.
+
+Without proxy: API keys created but **balance = 0**.
+With proxy: Turnstile auto-solves in ~30s, credits claimed.
+
+Default proxy: `http://1671586399:***@proxy.wtvconfigs.run.place:8069`
 
 ## Prerequisites
 
 ```bash
-pip install playwright
+pip install cloakbrowser playwright geoip2
 playwright install chromium
-```
-
-Or if using CloakBrowser:
-```bash
-pip install cloakbrowser
+# Xvfb for non-headless mode
+apt install xvfb && Xvfb :99 -screen 0 1920x1080x24 &
 ```
 
 ## Quick Start
 
 ```bash
-# Single account
-python bai-farm.py --email user@domain.com --password mypass
+# Step 1: Create API keys (no proxy needed)
+python bai-farm.py --range 1-120 --domain giosin.com --password mypass
 
-# Batch 100 accounts (kdi1@domain.com ... kdi100@domain.com)
-python bai-farm.py --range 1-100 --domain giosin.com --password mypass
-
-# Custom settings
-python bai-farm.py --range 1-50 --prefix acc --domain mail.com --password pass123 --delay 30
+# Step 2: Claim credits (PROXY REQUIRED)
+python bai-claim.py --range 1-120
 ```
+
+## Architecture
+
+```
+bai-farm.py:
+  Google OAuth → B.AI → Create API Key → Save sk-xxx
+  (headless, no proxy, ~2-3 min/account)
+
+bai-claim.py (orchestrator):
+  ├─ Phase 1: bai-oauth.py (headless, NO proxy)
+  │   Google OAuth → B.AI login → save persistent profile
+  │
+  ├─ Kill chrome processes (free RAM)
+  │
+  └─ Phase 2: bai-claim-step2.py (non-headless, WITH proxy)
+      Load profile → B.AI/chat → Click "Claim Free Credits"
+      → Turnstile auto-verifies (~30s)
+      → Playwright click "Claim" button
+      → 500K credits added
+```
+
+## Key Pitfalls
+
+1. **Proxy required for claim** — Turnstile blocks datacenter IPs
+2. **No proxy for OAuth** — Google blocks proxy logins
+3. **Playwright click, not JS** — `btn.click()` works, `dispatchEvent` doesn't trigger React state
+4. **Kill chromes between phases** — OOM if both browsers alive
+5. **Same profile dir** — Phase 1 & 2 share profile for session continuity
+6. **Xvfb required** — Non-headless needs display `:99`
+7. **geoip2 package** — `pip install geoip2`
+
+## Scripts
+
+| Script | Purpose | Proxy? |
+|--------|---------|--------|
+| `bai-farm.py` | Create API keys | No |
+| `bai-oauth.py` | Phase 1: OAuth + save profile | No |
+| `bai-claim-step2.py` | Phase 2: Claim credits | **YES** |
+| `bai-claim.py` | Orchestrator (runs both phases) | Configurable |
 
 ## CLI Arguments
 
-| Arg | Required | Default | Description |
-|-----|----------|---------|-------------|
-| `--email` | * | — | Single account email |
-| `--range` | * | — | Account range (e.g., `1-100`) |
-| `--domain` | No | `giosin.com` | Email domain |
-| `--password` | **Yes** | — | Password for all accounts |
-| `--prefix` | No | `kdi` | Account name prefix |
-| `--delay` | No | `10` | Seconds between accounts |
-| `--output` | No | `./bai-keys` | Output directory |
-
-*Provide either `--email` or `--range`
-
-## Output
-
+### bai-claim.py
 ```
-bai-keys/
-├── kdi1.txt          # sk-xxx...xxx (35 chars)
-├── kdi2.txt
-├── ...
-├── farm.log          # append-only log
-└── summary.json      # run summary
+--range RANGE        Account range (e.g., 1-120)
+--domain DOMAIN      Email domain (default: giosin.com)
+--password PASS      Password (default: qwertyui)
+--prefix PREFIX      Account prefix (default: kdi)
+--delay SECS         Delay between accounts (default: 10)
+--proxy-host HOST    Proxy server (default: proxy.wtvconfigs.run.place:8069)
+--proxy-user USER    Proxy username
+--proxy-pass PASS    Proxy password
+--test-only          Only test balance
 ```
-
-Each `.txt` file contains one API key: `sk-` prefix, 35 alphanumeric chars.
-
-## Flow (4 Steps)
-
-### 1. Google Login
-- Navigate to Google sign-in
-- Fill email → Next → Fill password → Next
-- **Pitfall**: Indonesian locale shows TOS "Saya mengerti" as `<input>` element, not `<button>`. Script handles this automatically.
-
-### 2. B.AI OAuth
-- Go to `chat.b.ai/key`
-- Click "Log in" → "Continue with Google" (triggers popup)
-- **CRITICAL**: Must use `ctx.expect_event('page')` BEFORE clicking to capture the popup
-- Handle account chooser + consent page
-- Wait for popup to redirect to `chat.b.ai`
-- **Pitfall**: Main page SPA routing hangs on `goto()`. Always use popup page for subsequent navigation.
-
-### 3. Claim Free Credits
-- Click "Claim Free Credits" button in header
-- Click inner "Claim" button in modal overlay
-- Press Escape to dismiss modal
-- **Pitfall**: Modal has z-index layering. Script uses JS dispatch to click through overlays.
-
-### 4. Create API Key
-- Click "Create API key" in API keys section
-- **Pitfall**: Must use `.type()` not `.fill()` — React state doesn't detect programmatic fill
-- Click submit button in modal (force `disabled=false`)
-- Poll page for `sk-` key
 
 ## After Farming
 
@@ -94,51 +97,23 @@ Each `.txt` file contains one API key: `sk-` prefix, 35 alphanumeric chars.
 # Count keys
 ls bai-keys/*.txt | wc -l
 
-# List keys (masked)
-for f in bai-keys/*.txt; do echo "$(basename $f .txt): $(head -c 12 $f)..."; done
-
-# Find failed accounts
-for n in $(seq 1 100); do f="bai-keys/kdi${n}.txt"; [ ! -f "$f" ] && echo "MISSING: kdi$n"; done
-```
-
-## Using Keys
-
-Keys work with OpenAI-compatible API:
-
-```bash
-curl https://chat.b.ai/v1/chat/completions \
-  -H "Authorization: Bearer sk-xxx...xxx" \
+# Test API
+curl https://api.b.ai/v1/chat/completions \
+  -H "Authorization: Bearer $(cat bai-keys/kdi1.txt)" \
   -H "Content-Type: application/json" \
-  -d '{
-    "model": "claude-sonnet-4-20250514",
-    "messages": [{"role": "user", "content": "hello"}]
-  }'
+  -d '{"model":"deepseek-v3.2","messages":[{"role":"user","content":"hi"}]}'
 ```
 
-## Pitfalls Reference
+## Performance
 
-1. **Popup won't open** — ~10-20% failure rate. Script retries 3x.
-2. **Main page SPA timeout** — B.AI is SPA, `page.goto()` hangs. Use popup page.
-3. **React `.fill()` silent fail** — Use `.type()` for keyboard input.
-4. **Modal overlay blocks clicks** — Use JS `dispatchEvent` with `bubbles:true`.
-5. **TOS button is `<input>`** — Indonesian Google locale, not `<button>`.
-6. **Terminal truncates `sk-`** — Display issue only. Full key is in the file.
-7. **Fingerprint must be consistent** — `--fingerprint=12345` for all accounts.
-8. **Account chooser** — Click by domain prefix if full email doesn't match.
-
-## Success Rate
-
-- **~98%** (118/120 in first production batch)
-- Each account: ~2-3 minutes
-- 120 accounts: ~4-6 hours
-- Total credits: 120 × 500K = **60,000,000**
+- Farm: ~2-3 min/account
+- Claim: ~3 min/account
+- 120 accounts: ~6 hours total
+- Credits: 500K per account = 60M total for 120 accounts
 
 ## For AI Agents
 
-When integrating this into an automation pipeline:
-
-1. **Run as background process**: `nohup python -u bai-farm.py --range 1-100 ... > farm.log 2>&1 &`
-2. **Monitor progress**: Check `farm.log` or count `.txt` files in output dir
-3. **Extract keys**: Read `.txt` files for API keys
-4. **Use keys**: Rotate through keys for API calls to `chat.b.ai/v1/`
-5. **Auto-skip**: Script skips accounts that already have valid keys
+- Run as background: `nohup python -u bai-claim.py --range 1-120 > claim.log 2>&1 &`
+- Monitor: check `claim.log` or count `.txt` files
+- Auto-skip: accounts with credits already are skipped
+- Proxy config via CLI args or edit defaults in script
