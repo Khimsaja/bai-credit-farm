@@ -1,0 +1,18 @@
+# Sensitive
+.env
+keys/
+results*.json
+claim*.log
+*.png
+/tmp/bai_*
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db
